@@ -5,3 +5,7 @@ models/
 
 __pycache__/
 *.pyc
+
+src/mel_cache/
+
+testing/
