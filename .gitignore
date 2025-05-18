@@ -9,3 +9,10 @@ __pycache__/
 src/mel_cache/
 
 testing/
+
+models/siamese_model.pth
+
+metadata/beatport_metadata.json
+metadata/negative_pairs.json
+metadata/positive_pairs.json
+metadata/tracklist.txt
