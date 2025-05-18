@@ -4,52 +4,38 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
-import librosa
 import numpy as np
-from pydub import AudioSegment
 
-# Dataset 
+# Dataset
 class RemixPairDataset(Dataset):
-    def __init__(self, pairs, label, root_dir):
+    def __init__(self, pairs, label, mel_cache_dir):
         self.pairs = pairs
         self.label = label
-        self.root_dir = root_dir
+        self.mel_cache_dir = mel_cache_dir
 
     def __len__(self):
         return len(self.pairs)
 
+    def sanitize_filename(self, fname):
+        return fname.strip().replace(".mp3", "").replace(".wav", "").replace("\u200b", "")
+
     def __getitem__(self, idx):
         fname1, fname2 = self.pairs[idx]
         print(f"Loading pair: {fname1}, {fname2}")
-        path1 = os.path.join(self.root_dir, fname1)
-        path2 = os.path.join(self.root_dir, fname2)
+        base1 = self.sanitize_filename(fname1)
+        base2 = self.sanitize_filename(fname2)
+        path1 = os.path.join(self.mel_cache_dir, base1 + ".npy")
+        path2 = os.path.join(self.mel_cache_dir, base2 + ".npy")
 
-        mel1 = self.get_mel(path1)
-        mel2 = self.get_mel(path2)
+        if not os.path.exists(path1):
+            raise FileNotFoundError(f"Missing: {path1}")
+        if not os.path.exists(path2):
+            raise FileNotFoundError(f"Missing: {path2}")
+
+        mel1 = np.load(path1)
+        mel2 = np.load(path2)
 
         return torch.tensor(mel1).unsqueeze(0), torch.tensor(mel2).unsqueeze(0), torch.tensor(self.label, dtype=torch.float32)
-
-    def convert_to_wav(self, mp3_path):
-        wav_path = mp3_path.replace(".mp3", ".wav")
-        if not os.path.exists(wav_path):
-            try:
-                audio = AudioSegment.from_file(mp3_path, format="mp3")
-                audio.export(wav_path, format="wav")
-            except Exception as e:
-                print(f"Error converting {mp3_path}: {e}")
-                return None
-        return wav_path
-
-    def get_mel(self, path):
-        if path.endswith(".mp3"):
-            path = self.convert_to_wav(path)
-            if path is None or not os.path.exists(path):
-                raise FileNotFoundError(f"Converted WAV not found for {path}")
-        y, sr = librosa.load(path, sr=22050)
-        mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
-        mel_db = librosa.power_to_db(mel, ref=np.max)
-        mel_db = librosa.util.fix_length(mel_db, size=512, axis=1)
-        return mel_db
 
 # Model
 class SiameseNetwork(nn.Module):
@@ -73,7 +59,7 @@ class SiameseNetwork(nn.Module):
     def forward(self, x1, x2):
         return self.forward_once(x1), self.forward_once(x2)
 
-# Loss 
+# Loss
 class ContrastiveLoss(nn.Module):
     def __init__(self, margin=1.0):
         super().__init__()
@@ -85,18 +71,18 @@ class ContrastiveLoss(nn.Module):
         return loss.mean()
 
 # Training
-def load_datasets(pos_json, neg_json, root_dir):
+def load_datasets(pos_json, neg_json, mel_cache_dir):
     with open(pos_json) as f:
         pos_pairs = json.load(f)
     with open(neg_json) as f:
         neg_pairs = json.load(f)
 
-    pos_dataset = RemixPairDataset(pos_pairs, label=0, root_dir=root_dir)
-    neg_dataset = RemixPairDataset(neg_pairs, label=1, root_dir=root_dir)
+    pos_dataset = RemixPairDataset(pos_pairs, label=0, mel_cache_dir=mel_cache_dir)
+    neg_dataset = RemixPairDataset(neg_pairs, label=1, mel_cache_dir=mel_cache_dir)
     return ConcatDataset([pos_dataset, neg_dataset])
 
 def train_model(dataset, model, loss_fn, optimizer, device, epochs=10, batch_size=16):
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     model.train()
     for epoch in range(epochs):
         total_loss = 0
@@ -113,14 +99,14 @@ def train_model(dataset, model, loss_fn, optimizer, device, epochs=10, batch_siz
         print(f"Epoch {epoch + 1}/{epochs}: Loss = {total_loss:.4f}")
 
 if __name__ == '__main__':
-    DATA_FOLDER = "../data"
-    POS_JSON = "positive_pairs.json"
-    NEG_JSON = "negative_pairs.json"
+    MEL_CACHE = "mel_cache"
+    POS_JSON = "../metadata/positive_pairs.json"
+    NEG_JSON = "../metadata/negative_pairs.json"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("Loading datasets")
-    dataset = load_datasets(POS_JSON, NEG_JSON, DATA_FOLDER)
+    dataset = load_datasets(POS_JSON, NEG_JSON, MEL_CACHE)
 
     print("Initializing model")
     model = SiameseNetwork().to(device)
